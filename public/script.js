@@ -1347,11 +1347,12 @@ function switchTab(id, btn) {
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
 
-  if (id === 'tab-bookings')     renderAdminBookings();
-  if (id === 'tab-history')      renderHistory();
-  if (id === 'tab-users')        renderUsersTable();
-  if (id === 'tab-reservations') { populateResSeatSelect(); renderReservationsList(); }
-  if (id === 'tab-settings')     loadSettingsForm();
+  if (id === 'tab-bookings')      renderAdminBookings();
+  if (id === 'tab-history')       renderHistory();
+  if (id === 'tab-users')         renderUsersTable();
+  if (id === 'tab-reservations')  { populateResSeatSelect(); renderReservationsList(); }
+  if (id === 'tab-settings')      loadSettingsForm();
+  if (id === 'tab-manualbooking') loadUpcomingBookings();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1826,3 +1827,176 @@ syncServerTime().then(() => {
     localStorage.removeItem('cobranet_user');
   }
 }());
+
+
+// ═══════════════════════════════════════════════════════════════
+// ADMIN MANUAL BOOKING
+// ═══════════════════════════════════════════════════════════════
+
+async function populateMbSeatSelect(bookedSeats) {
+  const sel = document.getElementById('mb-seat');
+  if (!sel) return;
+  const total   = cachedSettings.totalSeats || 30;
+  const current = sel.value;
+
+  // If bookedSeats not supplied, fetch them for the currently selected date.
+  if (!bookedSeats) {
+    const dateVal = document.getElementById('mb-date') ? document.getElementById('mb-date').value : '';
+    if (dateVal) {
+      try {
+        var resp = await apiRequest('/adminBooking?date=' + encodeURIComponent(dateVal), 'GET');
+        bookedSeats = (resp && resp.success && Array.isArray(resp.bookedSeats)) ? resp.bookedSeats : [];
+      } catch (_) {
+        bookedSeats = [];
+      }
+    } else {
+      bookedSeats = [];
+    }
+  }
+
+  const takenSet = new Set((bookedSeats || []).map(Number));
+  sel.innerHTML = '';
+  for (let i = 1; i <= total; i++) {
+    if (takenSet.has(i)) continue;
+    const opt = document.createElement('option');
+    opt.value       = String(i);
+    opt.textContent = 'Seat ' + i;
+    sel.appendChild(opt);
+  }
+  // Restore previous selection only if it is still available.
+  if (current && !takenSet.has(parseInt(current, 10)) && parseInt(current, 10) <= total) {
+    sel.value = current;
+  }
+}
+
+function renderUpcomingRows(bookings) {
+  const tbody = document.getElementById('upcoming-bookings-body');
+  const empty = document.getElementById('upcoming-empty');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!bookings || !bookings.length) {
+    if (empty) empty.style.display = 'block';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No upcoming manual bookings.</td></tr>';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  bookings.forEach(function(b) {
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + escapeHtml(b.date) + '</td>' +
+      '<td>' + escapeHtml(b.time) + '</td>' +
+      '<td><span class="badge badge-brand">Seat ' + escapeHtml(String(b.seat)) + '</span></td>' +
+      '<td>' + escapeHtml(b.staffName || '—') + '</td>' +
+      '<td>' + escapeHtml(b.staffId || '—') + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function loadUpcomingBookings() {
+  await populateMbSeatSelect();
+  try {
+    var data = await apiRequest('/adminBooking', 'GET');
+    if (data && data.success) {
+      renderUpcomingRows(data.bookings || []);
+    } else {
+      renderUpcomingRows([]);
+    }
+  } catch (err) {
+    console.error('loadUpcomingBookings error:', err);
+    renderUpcomingRows([]);
+  }
+}
+
+async function submitManualBooking() {
+  var errEl = document.getElementById('mb-error');
+  var okEl  = document.getElementById('mb-success');
+  if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+  if (okEl)  { okEl.style.display  = 'none'; okEl.textContent  = ''; }
+
+  var date     = (document.getElementById('mb-date')     ? document.getElementById('mb-date').value     : '').trim();
+  var time     = (document.getElementById('mb-time')     ? document.getElementById('mb-time').value     : '').trim();
+  var name     = (document.getElementById('mb-name')     ? document.getElementById('mb-name').value     : '').trim();
+  var username = (document.getElementById('mb-username') ? document.getElementById('mb-username').value : '').trim();
+  var seat     = document.getElementById('mb-seat')      ? document.getElementById('mb-seat').value     : '';
+
+  if (!date || !time || !name || !username || !seat) {
+    if (errEl) { errEl.textContent = 'All fields are required.'; errEl.style.display = 'block'; }
+    return;
+  }
+
+  if (!currentUser || currentUser.role !== 'admin') {
+    if (errEl) { errEl.textContent = 'Admin access required.'; errEl.style.display = 'block'; }
+    return;
+  }
+
+  var adminId = (currentUser._id || currentUser.id || '');
+  if (!adminId) {
+    if (errEl) { errEl.textContent = 'Session error. Please log in again.'; errEl.style.display = 'block'; }
+    return;
+  }
+
+  try {
+    var data = await apiRequest('/adminBooking', 'POST', {
+      adminId:      adminId,
+      booking_date: date,
+      booking_time: time,
+      staff_name:   name,
+      staffId:      username,
+      seat_number:  parseInt(seat, 10)
+    });
+
+    if (data && data.success) {
+      if (okEl) { okEl.textContent = data.message || 'Booking created.'; okEl.style.display = 'block'; }
+
+      // Reset form fields
+      if (document.getElementById('mb-date'))     document.getElementById('mb-date').value     = '';
+      if (document.getElementById('mb-time'))     document.getElementById('mb-time').value     = '';
+      if (document.getElementById('mb-name'))     document.getElementById('mb-name').value     = '';
+      if (document.getElementById('mb-username')) document.getElementById('mb-username').value = '';
+
+      // Optimistically prepend the new booking to the table, then refresh
+      // from the server to ensure the list is authoritative.
+      if (data.booking) {
+        var existing = document.getElementById('upcoming-bookings-body');
+        var empty    = document.getElementById('upcoming-empty');
+        if (existing) {
+          // Remove "no bookings" placeholder if present
+          var placeholder = existing.querySelector('td[colspan]');
+          if (placeholder) existing.innerHTML = '';
+          if (empty) empty.style.display = 'none';
+
+          var b  = data.booking;
+          var tr = document.createElement('tr');
+          tr.setAttribute('data-booking-id', b.id || '');
+          tr.innerHTML =
+            '<td>' + escapeHtml(b.date) + '</td>' +
+            '<td>' + escapeHtml(b.time) + '</td>' +
+            '<td><span class="badge badge-brand">Seat ' + escapeHtml(String(b.seat)) + '</span></td>' +
+            '<td>' + escapeHtml(b.staffName || '—') + '</td>' +
+            '<td>' + escapeHtml(b.staffId   || '—') + '</td>';
+          existing.insertBefore(tr, existing.firstChild);
+        }
+      }
+
+      // Full refresh to get server-sorted, authoritative list
+      loadUpcomingBookings();
+    } else {
+      if (errEl) {
+        errEl.textContent = (data && data.message) ? data.message : 'Booking failed.';
+        errEl.style.display = 'block';
+      }
+    }
+  } catch (err) {
+    if (errEl) { errEl.textContent = 'Network error. Please try again.'; errEl.style.display = 'block'; }
+    console.error('submitManualBooking error:', err);
+  }
+}
