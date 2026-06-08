@@ -33,6 +33,8 @@ app.use('/api', async (req, res, next) => {
 });
 
 app.use('/api', require('./routes/staffRoutes'));
+app.use('/api/adminBooking', require('./routes/adminBookingRoutes'));
+app.use('/api', require('./routes/busRouteRoutes'));
 app.use('/api', require('./routes/routesreservationRoutes'));
 app.use('/api', require('./routes/routessettingsRoutes'));
 app.use('/api/cron', require('./routes/cronRoutes'));
